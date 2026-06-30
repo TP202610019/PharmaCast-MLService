@@ -34,10 +34,17 @@ class ForecastingStage:
         states: dict = {}
         for product_id, group in dataframe.groupby("product_id"):
             ordered = group.sort_values("date").reset_index(drop=True)
+            history_vals = ordered["quantity"].astype(float).tolist()
+            # Use full mean (including zero days) so intermittent products
+            # get a cap proportional to their true average demand, not just
+            # their "active day" average which would be several times higher.
+            full_avg = float(sum(history_vals) / len(history_vals)) if history_vals else 1.0
             states[str(product_id)] = {
-                "history": deque(ordered["quantity"].astype(float).tolist(), maxlen=history_window),
+                "history": deque(history_vals, maxlen=history_window),
                 "last_date": ordered["date"].max(),
                 "latest_context": ordered.iloc[-1].to_dict(),
+                "hist_avg": full_avg,
+                "pred_cap": max(full_avg * 3, 1.0),
             }
 
         product_ids = list(states.keys())
@@ -72,7 +79,11 @@ class ForecastingStage:
 
             # Distribute results back to each product's state
             for i, pid in enumerate(product_ids):
-                pred = float(predictions[i])
+                xgb_pred = float(predictions[i])
+                # Cap each step at 3× the daily historical average.
+                # This prevents autoregressive error accumulation without
+                # suppressing predictions for products with real demand.
+                pred = min(xgb_pred, states[pid]["pred_cap"])
                 state = states[pid]
                 rows.append(
                     {
