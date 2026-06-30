@@ -80,10 +80,12 @@ class ForecastingStage:
             # Distribute results back to each product's state
             for i, pid in enumerate(product_ids):
                 xgb_pred = float(predictions[i])
-                # Cap each step at 3× the daily historical average.
-                # This prevents autoregressive error accumulation without
-                # suppressing predictions for products with real demand.
-                pred = min(xgb_pred, states[pid]["pred_cap"])
+                hist_avg = states[pid]["hist_avg"]
+                # Blend: 30% XGBoost trend signal + 70% historical mean.
+                # Pure XGBoost compounds autoregressive errors over 30 steps;
+                # pure hist_avg ignores real trends. This balance keeps the
+                # total close to observed demand while capturing growth/decline.
+                pred = min(0.3 * xgb_pred + 0.7 * hist_avg, states[pid]["pred_cap"])
                 state = states[pid]
                 rows.append(
                     {
