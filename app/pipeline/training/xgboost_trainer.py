@@ -105,8 +105,11 @@ class XGBoostTrainingStage:
             n_estimators=300,
             max_depth=3,
             learning_rate=0.05,
-            subsample=0.9,
-            colsample_bytree=0.9,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            min_child_weight=10,   # prevents learning from products with very few sales
+            reg_alpha=0.5,         # L1 regularization — sparse feature selection
+            reg_lambda=2.0,        # L2 regularization — reduces overfitting
             objective="reg:squarederror",
             random_state=42,
             n_jobs=-1,

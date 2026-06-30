@@ -72,9 +72,12 @@ class FeatureEngineeringStage:
             .rename("_avg_qty")
         )
         dataframe = dataframe.join(product_avg, on="product_id")
+        # Bins scale with frequency: daily thresholds × 7 for weekly aggregation
+        freq = getattr(self.settings, "frequency", "D")
+        scale = 7 if freq == "W" else 1
         dataframe["demand_tier"] = pd.cut(
             dataframe["_avg_qty"],
-            bins=[-np.inf, 0.08, 0.42, 1.67, np.inf],
+            bins=[-np.inf, 0.08 * scale, 0.42 * scale, 1.67 * scale, np.inf],
             labels=["baja", "media", "alta", "critica"],
         ).astype(str)
         dataframe = dataframe.drop(columns=["_avg_qty"])
@@ -136,7 +139,8 @@ class FeatureEngineeringStage:
             if stock_is_dynamic and stock_active_pct > 0.05:
                 # Stockout flag: separates "no stock" from "no demand"
                 dataframe["is_stockout"] = (dataframe["stock"] == 0).astype(int)
-                rolling_ref = dataframe["rolling_mean_7"] if "rolling_mean_7" in dataframe.columns else dataframe["quantity"]
+                rolling_cols = [c for c in dataframe.columns if c.startswith("rolling_mean_")]
+                rolling_ref = dataframe[rolling_cols[0]] if rolling_cols else dataframe["quantity"]
                 dataframe["stock_coverage_days"] = (
                     dataframe["stock"] / rolling_ref.replace(0, pd.NA).fillna(1)
                 ).clip(lower=0, upper=365).fillna(0)

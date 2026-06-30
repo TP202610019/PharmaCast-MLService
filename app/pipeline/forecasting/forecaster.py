@@ -34,10 +34,16 @@ class ForecastingStage:
         states: dict = {}
         for product_id, group in dataframe.groupby("product_id"):
             ordered = group.sort_values("date").reset_index(drop=True)
+            history_vals = ordered["quantity"].astype(float).tolist()
+            nonzero = [v for v in history_vals if v > 0]
+            hist_avg = float(sum(nonzero) / len(nonzero)) if nonzero else 1.0
             states[str(product_id)] = {
-                "history": deque(ordered["quantity"].astype(float).tolist(), maxlen=history_window),
+                "history": deque(history_vals, maxlen=history_window),
                 "last_date": ordered["date"].max(),
                 "latest_context": ordered.iloc[-1].to_dict(),
+                # cap = 4× non-zero average per period; prevents exploding predictions
+                # for intermittent-demand products (those with many zero-sale periods)
+                "pred_cap": max(hist_avg * 4, 1.0),
             }
 
         product_ids = list(states.keys())
@@ -72,7 +78,7 @@ class ForecastingStage:
 
             # Distribute results back to each product's state
             for i, pid in enumerate(product_ids):
-                pred = float(predictions[i])
+                pred = min(float(predictions[i]), states[pid]["pred_cap"])
                 state = states[pid]
                 rows.append(
                     {

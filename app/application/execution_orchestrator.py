@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -129,10 +130,15 @@ class ExecutionOrchestrator:
             trained_model = self.training_stage.run(feature_dataset)
 
             # ── 6. Generate forecast ──────────────────────────────────────────
+            # Convert forecast days to the correct number of model steps
+            if self.settings.frequency == "W":
+                horizon = max(1, math.ceil(request.forecastPeriod / 7))
+            else:
+                horizon = request.forecastPeriod
             forecast_result = self.forecasting_stage.run(
                 trained_model=trained_model,
                 feature_dataset=feature_dataset,
-                horizon=request.forecastPeriod,
+                horizon=horizon,
             )
 
             # ── 7. Compute metrics ────────────────────────────────────────────

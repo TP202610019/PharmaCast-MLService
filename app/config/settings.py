@@ -16,10 +16,10 @@ class Settings:
     database_url: str
     azure_storage_connection_string: str
     historical_datasets_container: str = "historical-datasets"
-    # Pipeline configuration
-    frequency: str = "D"
-    lags: list[int] = field(default_factory=lambda: [1, 7, 14])
-    rolling_windows: list[int] = field(default_factory=lambda: [7, 14])
+    # Pipeline configuration — weekly frequency reduces intermittent-demand noise
+    frequency: str = "W"
+    lags: list[int] = field(default_factory=lambda: [1, 2, 4, 8])
+    rolling_windows: list[int] = field(default_factory=lambda: [2, 4])
     required_columns: list[str] = field(default_factory=lambda: ["date", "product_id", "quantity"])
     column_aliases: dict[str, list[str]] = field(
         default_factory=lambda: {
