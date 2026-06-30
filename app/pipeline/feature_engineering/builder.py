@@ -72,12 +72,9 @@ class FeatureEngineeringStage:
             .rename("_avg_qty")
         )
         dataframe = dataframe.join(product_avg, on="product_id")
-        # Bins scale with frequency: daily thresholds × 7 for weekly aggregation
-        freq = getattr(self.settings, "frequency", "D")
-        scale = 7 if freq == "W" else 1
         dataframe["demand_tier"] = pd.cut(
             dataframe["_avg_qty"],
-            bins=[-np.inf, 0.08 * scale, 0.42 * scale, 1.67 * scale, np.inf],
+            bins=[-np.inf, 0.08, 0.42, 1.67, np.inf],
             labels=["baja", "media", "alta", "critica"],
         ).astype(str)
         dataframe = dataframe.drop(columns=["_avg_qty"])
