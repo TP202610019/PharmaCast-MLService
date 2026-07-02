@@ -16,6 +16,9 @@ class Settings:
     database_url: str
     azure_storage_connection_string: str
     historical_datasets_container: str = "historical-datasets"
+    # Max days of historical data returned/persisted per execution for chart preview
+    # (model training still uses the full accumulated history from blob, unaffected).
+    historical_window_days: int = 90
     # Pipeline configuration
     frequency: str = "D"
     lags: list[int] = field(default_factory=lambda: [1, 7, 14])
@@ -57,8 +60,11 @@ def get_settings() -> Settings:
     if not azure_storage_connection_string:
         raise RuntimeError("AZURE_STORAGE_CONNECTION_STRING is not configured.")
 
+    historical_window_days = int(os.getenv("HISTORICAL_WINDOW_DAYS", "90"))
+
     return Settings(
         base_dir=base_dir,
         database_url=database_url,
         azure_storage_connection_string=azure_storage_connection_string,
+        historical_window_days=historical_window_days,
     )

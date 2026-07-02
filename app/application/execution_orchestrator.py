@@ -157,9 +157,15 @@ class ExecutionOrchestrator:
             )
 
             # ── 7b. Compute daily historical totals per product ───────────────
+            # Only the recent window is returned/persisted for the chart preview —
+            # the model above already trained on the full combined_df history.
             historical_points: list = []
             try:
-                daily_series = combined_df.groupby(["product_id", "date"])["quantity"].sum()
+                window_cutoff = combined_df["date"].max() - pd.Timedelta(
+                    days=self.settings.historical_window_days
+                )
+                windowed_df = combined_df[combined_df["date"] >= window_cutoff]
+                daily_series = windowed_df.groupby(["product_id", "date"])["quantity"].sum()
                 for (pid, date_val), qty in daily_series.items():
                     date_str = pd.Timestamp(date_val).strftime("%Y-%m-%d") if hasattr(date_val, "year") else str(date_val)[:10]
                     historical_points.append(
