@@ -52,6 +52,10 @@ async def startup_validation() -> None:
     settings = get_settings()
     db_ok = _init_database(settings)
 
+    if db_ok:
+        from app.config.mapping_catalog import load_field_key_catalog
+        await load_field_key_catalog()
+
     if os.getenv("ENVIRONMENT", "development") == "development":
         sep = "=" * 60
         print(f"\n{sep}")

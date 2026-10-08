@@ -12,15 +12,8 @@ from app.domain.models.execution_request import (
     PredictionExecutionResponse,
 )
 from app.infrastructure.database.session import get_db_session
-from app.infrastructure.persistence.repositories.dataset_repository import DatasetRepository
-from app.infrastructure.persistence.repositories.forecast_result_repository import (
-    ForecastResultRepository,
-)
 from app.infrastructure.persistence.repositories.prediction_execution_repository import (
     PredictionExecutionRepository,
-)
-from app.infrastructure.persistence.repositories.prediction_metric_repository import (
-    PredictionMetricRepository,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,7 +24,7 @@ router = APIRouter(prefix="/predictions", tags=["prediction-execution"])
 @router.post("/execute", response_model=PredictionExecutionResponse, status_code=200)
 async def execute_prediction(
     request: PredictionExecutionRequest,
-    db: AsyncSession | None = Depends(get_db_session),
+        db: AsyncSession | None = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> PredictionExecutionResponse:
     """
@@ -48,7 +41,8 @@ async def execute_prediction(
     4. Retrain XGBoost model on combined dataset
     5. Generate forecast for forecastPeriod periods
     6. Compute evaluation metrics (WAPE, RMSE, MAE, MAPE)
-    7. Persist execution record, forecast results, and metrics to PostgreSQL
+    7. Update the execution record's status in PostgreSQL (forecast/metrics rows are
+       persisted by the Backend API, not here — see ExecutionOrchestrator's docstring)
     8. Return structured response with status, metrics, and forecast
     """
     logger.info(
@@ -67,9 +61,6 @@ async def execute_prediction(
     orchestrator = ExecutionOrchestrator(
         settings=settings,
         execution_repo=PredictionExecutionRepository(db) if db is not None else None,
-        forecast_repo=ForecastResultRepository(db) if db is not None else None,
-        metrics_repo=PredictionMetricRepository(db) if db is not None else None,
-        dataset_repo=DatasetRepository(db) if db is not None else None,
     )
     try:
         response = await orchestrator.execute(request)

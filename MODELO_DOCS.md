@@ -257,8 +257,6 @@ Cada ejecución guarda un snapshot de los datos procesados en `almacen/historica
 
 Esto permite que el modelo mejore con el tiempo sin necesidad de re-subir datos históricos en cada predicción.
 
-**`isRetrain: true`** en la respuesta indica que se usaron datos de ejecuciones anteriores.
-
 ---
 
 ## 8. Limitaciones conocidas

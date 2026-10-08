@@ -31,7 +31,12 @@ class HistoricalDataManager:
 
     def load_historical(self, user_id: str) -> pd.DataFrame | None:
         prefix = f"{user_id}/historical_"
-        blobs = sorted(self._container.list_blobs(name_starts_with=prefix), key=lambda b: b.name)
+        # Ordenar por fecha real de subida (last_modified), no por nombre del blob:
+        # el nombre incluye un GUID aleatorio (execution_id) sin ningún orden
+        # temporal, así que ordenar alfabéticamente por nombre no garantiza que
+        # el snapshot más reciente quede último — y el drop_duplicates(keep="last")
+        # de más abajo depende de que sí lo esté.
+        blobs = sorted(self._container.list_blobs(name_starts_with=prefix), key=lambda b: b.last_modified)
         if not blobs:
             return None
 
@@ -64,9 +69,8 @@ class HistoricalDataManager:
         user_id: str,
         new_data: pd.DataFrame,
         execution_id: str,
-    ) -> tuple[pd.DataFrame, bool]:
+    ) -> pd.DataFrame:
         historical = self.load_historical(user_id) if self.has_historical_data(user_id) else None
-        is_retrain = historical is not None
 
         if historical is not None:
             combined = pd.concat([historical, new_data], ignore_index=True, sort=False)
@@ -76,7 +80,7 @@ class HistoricalDataManager:
             combined = new_data.copy()
 
         self.accumulate(user_id, new_data, execution_id)
-        return combined, is_retrain
+        return combined
 
     def snapshot_count(self, user_id: str) -> int:
         prefix = f"{user_id}/historical_"

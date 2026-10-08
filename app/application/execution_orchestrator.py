@@ -24,11 +24,9 @@ from app.pipeline.training.xgboost_trainer import XGBoostTrainingStage
 from app.pipeline.transformation.dynamic_transform import DynamicTransformationStage
 from app.shared.utils import utc_now
 
+# Solo para autocompletado/tipado en el editor; no se ejecuta en runtime.
 if TYPE_CHECKING:
-    from app.application.interfaces.i_dataset_repository import IDatasetRepository
     from app.application.interfaces.i_execution_repository import IExecutionRepository
-    from app.application.interfaces.i_forecast_repository import IForecastRepository
-    from app.application.interfaces.i_metrics_repository import IMetricsRepository
 
 logger = logging.getLogger(__name__)
 
@@ -39,15 +37,14 @@ class ExecutionOrchestrator:
     """
     Coordinates the full prediction pipeline for POST /predictions/execute.
 
-    All persistence is handled via PostgreSQL repositories.
-    Historical data accumulation is managed via Azure Blob Storage.
+    Only marks the execution Failed on error — the Backend API is the sole writer of
+    Completed status, forecast_results, and prediction_metrics (see PredictionService.cs).
 
     Architecture:
         Backend API uploads file to Azure Blob → calls this endpoint with SAS URL
         → DatasetLoader reads file from SAS URL → DynamicTransform applies column mapping
         → HistoricalDataManager merges with past data from Azure Blob for retraining
         → Feature engineering → XGBoost training → Forecasting → Metrics
-        → DB persistence (execution record, forecast_results, prediction_metrics)
         → Structured JSON response
     """
 
@@ -55,9 +52,6 @@ class ExecutionOrchestrator:
         self,
         settings: Settings,
         execution_repo: IExecutionRepository | None = None,
-        forecast_repo: IForecastRepository | None = None,
-        metrics_repo: IMetricsRepository | None = None,
-        dataset_repo: IDatasetRepository | None = None,
     ) -> None:
         self.settings = settings
         self.dataset_loader = StorageDatasetLoader()
@@ -71,33 +65,10 @@ class ExecutionOrchestrator:
             container_name=settings.historical_datasets_container,
         )
         self.execution_repo = execution_repo
-        self.forecast_repo = forecast_repo
-        self.metrics_repo = metrics_repo
-        self.dataset_repo = dataset_repo
 
     async def execute(self, request: PredictionExecutionRequest) -> PredictionExecutionResponse:
         execution_id = request.predictionExecutionId
         started_at = utc_now()
-
-        if self.dataset_repo:
-            try:
-                dataset_record = await self.dataset_repo.get_by_id(request.datasetId)
-                if dataset_record is not None:
-                    logger.info("Dataset %s found in DB: stage=%s", request.datasetId, dataset_record.stage)
-                else:
-                    logger.warning("Dataset %s not found in DB — proceeding with request data.", request.datasetId)
-            except Exception as exc:
-                logger.warning("DB dataset lookup failed (non-fatal): %s", exc)
-
-        if self.execution_repo:
-            try:
-                await self.execution_repo.create(
-                    execution_id=execution_id,
-                    dataset_id=request.datasetId,
-                    started_at=started_at,
-                )
-            except Exception as exc:
-                logger.warning("DB execution create failed (non-fatal): %s", exc)
 
         try:
             # ── 1. Load dataset from SAS URL ──────────────────────────────────
@@ -109,19 +80,14 @@ class ExecutionOrchestrator:
             )
 
             # ── 3. Merge with historical data from Azure Blob ─────────────────
-            history_key = request.userId if request.userId else request.datasetId
-            combined_df, is_retrain = self.historical_manager.get_combined_dataset(
-                user_id=history_key,
+            combined_df = self.historical_manager.get_combined_dataset(
+                user_id=request.userId,
                 new_data=processed_dataset.dataframe,
                 execution_id=execution_id,
             )
 
             from app.domain.models.artifacts import ProcessedDataset
-            combined_processed = ProcessedDataset(
-                name="combined_processed_dataset",
-                dataframe=combined_df,
-                schema_version="v1",
-            )
+            combined_processed = ProcessedDataset(dataframe=combined_df, schema_version="v1")
 
             # ── 4. Feature engineering ────────────────────────────────────────
             feature_dataset = self.feature_engineering.run(combined_processed)
@@ -182,40 +148,14 @@ class ExecutionOrchestrator:
                 predictionExecutionId=execution_id,
                 datasetId=request.datasetId,
                 status="Completed",
-                isRetrain=is_retrain,
                 startedAt=started_at.isoformat(),
                 completedAt=completed_at.isoformat(),
                 metrics=metrics_summary,
                 productMetrics=product_metrics,
                 forecast=forecast_entries,
                 historicalPoints=historical_points,
-                artifactPaths={},
                 errorMessage=None,
             )
-
-            # ── 9. Persist to DB ──────────────────────────────────────────────
-            if self.forecast_repo:
-                try:
-                    await self.forecast_repo.bulk_insert(execution_id, forecast_entries)
-                except Exception as exc:
-                    logger.warning("DB forecast insert failed (non-fatal): %s", exc)
-
-            if self.metrics_repo:
-                try:
-                    await self.metrics_repo.bulk_insert(execution_id, metrics_summary, product_metrics)
-                except Exception as exc:
-                    logger.warning("DB metrics insert failed (non-fatal): %s", exc)
-
-            if self.execution_repo:
-                try:
-                    await self.execution_repo.update_completed(
-                        execution_id=execution_id,
-                        is_retrain=is_retrain,
-                        completed_at=completed_at,
-                        artifact_paths={},
-                    )
-                except Exception as exc:
-                    logger.warning("DB execution update (Completed) failed (non-fatal): %s", exc)
 
             return response
 

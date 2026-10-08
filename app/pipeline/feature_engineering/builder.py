@@ -7,6 +7,7 @@ import pandas as pd
 
 from app.config.settings import Settings
 from app.domain.models.artifacts import FeatureDataset, ProcessedDataset
+from app.config.mapping_catalog import get_optional_field_keys
 
 logger = logging.getLogger(__name__)
 
@@ -79,70 +80,35 @@ class FeatureEngineeringStage:
         ).astype(str)
         dataframe = dataframe.drop(columns=["_avg_qty"])
 
-        # price feature engineering: auto-detect if price varies meaningfully.
+        # unit_price feature engineering: auto-detect if price varies meaningfully.
         # If the median coefficient of variation across products > 2%, price is
         # considered dynamic and gets change/vs-avg features. Otherwise only
-        # revenue_importance is kept and raw price is dropped (it adds no signal).
-        if "price" in dataframe.columns:
-            dataframe["price"] = pd.to_numeric(dataframe["price"], errors="coerce").fillna(0)
+        # revenue_importance is kept and raw unit_price is dropped (it adds no signal).
+        if "unit_price" in dataframe.columns:
+            dataframe["unit_price"] = pd.to_numeric(dataframe["unit_price"], errors="coerce").fillna(0)
             dataframe["revenue_importance"] = (
-                dataframe["price"] * dataframe.groupby("product_id")["quantity"].transform("mean")
+                dataframe["unit_price"] * dataframe.groupby("product_id")["quantity"].transform("mean")
             ).clip(lower=0)
 
             price_cv = (
-                dataframe.groupby("product_id")["price"]
+                dataframe.groupby("product_id")["unit_price"]
                 .agg(lambda s: s.std() / s.mean() if s.mean() > 0 else 0)
             )
             price_is_dynamic = float(price_cv.median()) > 0.02
             logger.info("[FEATURE-ENG] price_cv median=%.4f → %s",
-                        float(price_cv.median()), "dynamic" if price_is_dynamic else "fixed (dropping raw price)")
+                        float(price_cv.median()), "dynamic" if price_is_dynamic else "fixed (dropping raw unit_price)")
 
             if price_is_dynamic:
-                price_avg = dataframe.groupby("product_id")["price"].transform("mean")
+                price_avg = dataframe.groupby("product_id")["unit_price"].transform("mean")
                 dataframe["price_change"] = (
-                    dataframe.groupby("product_id")["price"].pct_change()
+                    dataframe.groupby("product_id")["unit_price"].pct_change()
                     .replace([np.inf, -np.inf], 0).fillna(0)
                 )
                 dataframe["price_vs_avg"] = (
-                    (dataframe["price"] - price_avg) / price_avg.replace(0, pd.NA).fillna(1)
+                    (dataframe["unit_price"] - price_avg) / price_avg.replace(0, pd.NA).fillna(1)
                 ).replace([np.inf, -np.inf], 0).fillna(0)
             else:
-                dataframe = dataframe.drop(columns=["price"])
-
-        # stock feature engineering:
-        # Guard 1 — snapshot detection: if stock barely changes per product it's a
-        #   current-inventory snapshot, not a time-series → useless as a daily feature.
-        # Guard 2 — stockout flag: days with stock=0 likely have suppressed demand
-        #   (no stock → no sales), not true zero demand. Mark them separately so the
-        #   model learns stockout ≠ low demand.
-        # Guard 3 — active check: >5% of rows must have stock > 0.
-        if "stock" in dataframe.columns:
-            dataframe["stock"] = pd.to_numeric(dataframe["stock"], errors="coerce").fillna(0).clip(lower=0)
-
-            stock_cv_per_product = dataframe.groupby("product_id")["stock"].agg(
-                lambda s: s.std() / s.mean() if s.mean() > 0 else 0
-            )
-            stock_is_dynamic = float(stock_cv_per_product.median()) > 0.05
-            stock_active_pct = (dataframe["stock"] > 0).mean()
-
-            logger.info(
-                "[FEATURE-ENG] stock cv_median=%.4f active=%.1f%% → %s",
-                float(stock_cv_per_product.median()), stock_active_pct * 100,
-                "dynamic+useful" if (stock_is_dynamic and stock_active_pct > 0.05)
-                else "static snapshot — dropping" if not stock_is_dynamic
-                else "mostly zero — dropping"
-            )
-
-            if stock_is_dynamic and stock_active_pct > 0.05:
-                # Stockout flag: separates "no stock" from "no demand"
-                dataframe["is_stockout"] = (dataframe["stock"] == 0).astype(int)
-                rolling_cols = [c for c in dataframe.columns if c.startswith("rolling_mean_")]
-                rolling_ref = dataframe[rolling_cols[0]] if rolling_cols else dataframe["quantity"]
-                dataframe["stock_coverage_days"] = (
-                    dataframe["stock"] / rolling_ref.replace(0, pd.NA).fillna(1)
-                ).clip(lower=0, upper=365).fillna(0)
-            else:
-                dataframe = dataframe.drop(columns=["stock"])
+                dataframe = dataframe.drop(columns=["unit_price"])
 
         # promotion feature engineering:
         # Guard 1 — rate check: if <2% of rows have promotion=1, there's not enough
@@ -185,14 +151,13 @@ class FeatureEngineeringStage:
 
         feature_columns = self._feature_columns(dataframe)
         return FeatureDataset(
-            name="feature_dataset",
             dataframe=dataframe,
             feature_columns=feature_columns,
             target_column="quantity",
         )
 
     def _resample(self, dataframe: pd.DataFrame) -> pd.DataFrame:
-        optional_columns = [column for column in self.settings.optional_aliases if column in dataframe.columns]
+        optional_columns = [column for column in get_optional_field_keys() if column in dataframe.columns]
         parts: list[pd.DataFrame] = []
 
         for product_id, group in dataframe.groupby("product_id"):
@@ -223,8 +188,7 @@ class FeatureEngineeringStage:
         growth        = ["growth"] if "growth" in dataframe.columns else []
         revenue       = ["revenue_importance"] if "revenue_importance" in dataframe.columns else []
         price_derived = [c for c in ["price_change", "price_vs_avg"] if c in dataframe.columns]
-        stock_derived = [c for c in ["stock", "is_stockout", "stock_coverage_days"] if c in dataframe.columns]
         promo_derived = [c for c in ["promotion", "days_since_last_promo"] if c in dataframe.columns]
-        optional      = [c for c in self.settings.optional_aliases
-                         if c in dataframe.columns and c not in {"price", "stock", "promotion"}]
-        return base + lag_columns + rolling_columns + growth + revenue + price_derived + stock_derived + promo_derived + optional
+        optional      = [c for c in get_optional_field_keys()
+                         if c in dataframe.columns and c not in {"unit_price", "promotion"}]
+        return base + lag_columns + rolling_columns + growth + revenue + price_derived + promo_derived + optional

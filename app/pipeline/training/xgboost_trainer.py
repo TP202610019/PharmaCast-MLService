@@ -61,7 +61,6 @@ class XGBoostTrainingStage:
         logger.info("[XGBOOST-TRAIN] Training complete.")
 
         return TrainedModel(
-            name="xgboost_trained_model",
             model_pipeline=pipeline,
             feature_columns=components.feature_columns,
             training_rows=int(len(dataframe)),

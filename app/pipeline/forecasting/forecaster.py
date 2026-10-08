@@ -8,6 +8,7 @@ from pandas.tseries.frequencies import to_offset
 
 from app.config.settings import Settings
 from app.domain.models.artifacts import FeatureDataset, ForecastResult, TrainedModel
+from app.config.mapping_catalog import get_optional_field_keys
 
 
 class ForecastingStage:
@@ -23,7 +24,7 @@ class ForecastingStage:
         horizon: int,
     ) -> ForecastResult:
         dataframe = feature_dataset.dataframe.copy()
-        optional_columns = [column for column in self.settings.optional_aliases if column in dataframe.columns]
+        optional_columns = [column for column in get_optional_field_keys() if column in dataframe.columns]
         rows: list[dict[str, object]] = []
 
         history_window = max(self.settings.lags + self.settings.rolling_windows + [2]) * 3
@@ -100,11 +101,7 @@ class ForecastingStage:
                 state["last_date"] = next_dates[i]
 
         forecast_frame = pd.DataFrame(rows).sort_values(["product_id", "date", "forecast_step"])
-        return ForecastResult(
-            name="forecast_result",
-            dataframe=forecast_frame.reset_index(drop=True),
-            horizon=horizon,
-        )
+        return ForecastResult(dataframe=forecast_frame.reset_index(drop=True), horizon=horizon)
 
     def _build_feature_row(
         self,
