@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,17 @@ import pandas as pd
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def normalize_column_name(value: str) -> str:
+    """Case/whitespace/punctuation-insensitive key for comparing column names.
+
+    Single source of truth so a request-level duplicate check (comparing
+    mapped column names to each other) and a dataset-level lookup (matching
+    a mapped name against real file headers) always agree on what counts as
+    "the same column".
+    """
+    return re.sub(r"[^a-z0-9_]+", "_", str(value).strip().lower())
 
 
 def make_serializable(value: Any) -> Any:

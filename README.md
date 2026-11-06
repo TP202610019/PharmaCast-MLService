@@ -1,5 +1,9 @@
 # XGBoost Demand Forecasting for Pharmacy Medication Sales
 
+For the current FastAPI pipeline, backend response contract and runtime setup,
+see [ML_PIPELINE_CHANGES.md](ML_PIPELINE_CHANGES.md). The older CLI material below
+is retained for reference.
+
 This project trains an experimental demand forecasting model for medication
 sales in small pharmacies (MYPE). It supports thesis testing with small CSV
 datasets and can scale to larger historical datasets later.

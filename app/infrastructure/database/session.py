@@ -24,13 +24,13 @@ def init_session_factory() -> None:
     logger.info("Async session factory initialized.")
 
 
+"""Se usa para: dependencia de FastAPI (via Depends) — abre una sesión nueva
+por cada request HTTP, se la entrega al endpoint, y al terminar hace commit
+(o rollback si hubo excepción) y la cierra sola. Corre dentro del ciclo de
+vida de un request; para código que corre fuera de un request (ej. el
+arranque del servidor) usar get_session_factory() en su lugar."""
+
 async def get_db_session() -> AsyncGenerator[AsyncSession | None, None]:
-    """
-    FastAPI dependency that yields a scoped AsyncSession per request.
-    Yields None (instead of raising) when the session factory was not
-    initialized (e.g. PostgreSQL unavailable at startup) so that the
-    prediction pipeline can still run using the local JSON fallback.
-    """
     if _session_factory is None:
         logger.warning(
             "DB session factory not initialized — yielding None. "
@@ -46,3 +46,13 @@ async def get_db_session() -> AsyncGenerator[AsyncSession | None, None]:
         except Exception:
             await session.rollback()
             raise
+
+
+"""Se usa para: exponer la fábrica cruda a código que corre fuera del ciclo
+de un request (ej. mapping_catalog.py, en el arranque del servidor) — a
+diferencia de get_db_session(), acá quien llama debe abrir y cerrar la
+sesión a mano con `async with session_factory() as session:`. Devuelve None
+si la fábrica nunca se inicializó, para que el caller degrade con gracia."""
+
+def get_session_factory() -> async_sessionmaker[AsyncSession] | None:
+    return _session_factory
