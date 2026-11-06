@@ -62,6 +62,32 @@ class FakeTraining:
 
 
 class RealPipelineTests(unittest.TestCase):
+    def test_period_volume_error_preserves_zeros_and_daily_wape(self):
+        actual = np.array([0., 0., 0., 10.])
+        predicted = np.array([1., 1., 1., 8.])
+        metric = MetricsCalculationStage._build_metric("Product", "A", actual, predicted)
+        self.assertEqual(metric.wape, 50)
+        self.assertEqual(metric.actualTotal, 10)
+        self.assertEqual(metric.predictedTotal, 11)
+        self.assertEqual(metric.absoluteTotalError, 1)
+        self.assertEqual(metric.totalErrorPercentage, 10)
+        zero = MetricsCalculationStage._build_metric("Product", "A", np.zeros(4), predicted)
+        self.assertIsNone(zero.totalErrorPercentage)
+        self.assertEqual(zero.absoluteTotalError, 11)
+
+    def test_global_volume_error_does_not_cancel_between_products(self):
+        with TemporaryDirectory() as root:
+            frame = dataset(50)
+            frame.loc[(frame.date > "2025-01-20") & (frame.product_id == "A"), "quantity"] = 12
+            frame.loc[(frame.date > "2025-01-20") & (frame.product_id == "B"), "quantity"] = 8
+            result = MetricsCalculationStage(settings(root), FakeTraining()).run(ProcessedDataset("test", frame, "v1"), 30)
+            for method in ("XGBoost", "NaiveWeekly"):
+                overall = next(m for m in result.metrics if m.method == method and m.scope == "Overall")
+                self.assertEqual(overall.actualTotal, 600)
+                self.assertEqual(overall.predictedTotal, 600)
+                self.assertEqual(overall.absoluteTotalError, 120)
+                self.assertEqual(overall.totalErrorPercentage, 20)
+
     def test_prepare_history_groups_sales_and_does_not_train(self):
         from app.api.execution_routes import prepare_history
         frame = pd.DataFrame({"date": pd.to_datetime(["2025-01-01", "2025-01-01", "2025-01-03"]),
@@ -340,9 +366,9 @@ class RealPipelineTests(unittest.TestCase):
         orchestrator.dataset_loader.load.return_value.dataframe = frame
         response = asyncio.run(orchestrator.execute(self.request()))
         series = [p for p in response.historicalPoints if p.productId == "A"]
-        self.assertEqual(len(series), 50)
+        self.assertEqual(len(series), 2)
         self.assertEqual(sum(p.quantity for p in series), 30)
-        self.assertEqual(series[1].quantity, 0)
+        self.assertEqual([p.quantity for p in series], [10., 20.])
         for metrics in (response.productMetrics, response.baselineProductMetrics):
             self.assertEqual(next(m for m in metrics if m.productId == "A").historicalAvg, 0.6)
         keys = ("wape", "mae", "rmse", "mbe", "mape")

@@ -80,6 +80,10 @@ class PredictionMetric:
     mape: float | None
     rows: int
     method: str = "XGBoost"
+    actualTotal: float | None = None
+    predictedTotal: float | None = None
+    absoluteTotalError: float | None = None
+    totalErrorPercentage: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -92,4 +96,8 @@ class PredictionMetric:
             "mape": self.mape,
             "rows": self.rows,
             "method": self.method,
+            "actualTotal": self.actualTotal,
+            "predictedTotal": self.predictedTotal,
+            "absoluteTotalError": self.absoluteTotalError,
+            "totalErrorPercentage": self.totalErrorPercentage,
         }

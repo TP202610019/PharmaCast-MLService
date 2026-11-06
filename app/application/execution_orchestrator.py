@@ -78,9 +78,11 @@ class ExecutionOrchestrator:
         metrics_summary, product_metrics = self._metric_response(evaluation.metrics, "XGBoost", historical_avgs)
         baseline_summary, baseline_products = self._metric_response(evaluation.metrics, "NaiveWeekly", historical_avgs)
 
+        # Keep the dense grid for features, evaluation and forecasting. Persist only
+        # actual sales rows; the API reconstructs zero-demand days for chart display.
         historical_points = [HistoricalDailyEntry(
             productId=str(row.product_id), date=row.date.strftime("%Y-%m-%d"), quantity=float(row.quantity)
-        ) for row in feature_dataset.dataframe.itertuples(index=False)]
+        ) for row in feature_dataset.dataframe.itertuples(index=False) if float(row.quantity) != 0.0]
 
         response = PredictionExecutionResponse(
             predictionExecutionId=execution_id, datasetId=request.datasetId,
@@ -128,13 +130,13 @@ class ExecutionOrchestrator:
     def _metric_response(metrics, method, historical_avgs):
         selected = [m for m in metrics if m.method == method]
         overall = next((m for m in selected if m.scope == "Overall"), None)
-        values = {key: getattr(overall, key) for key in ("wape", "mae", "rmse", "mbe", "mape", "rows")} if overall else {}
+        values = {key: getattr(overall, key) for key in ("wape", "mae", "rmse", "mbe", "mape", "rows", "actualTotal", "predictedTotal", "absoluteTotalError", "totalErrorPercentage")} if overall else {}
         summary = ExecutionMetricsSummary(method=method, **values)
         by_product = {m.product_id: m for m in selected if m.scope == "Product"}
         records = []
         for pid, avg in historical_avgs.items():
             metric = by_product.get(pid)
-            values = {key: getattr(metric, key) for key in ("wape", "mae", "rmse", "mbe", "mape", "rows")} if metric else {}
+            values = {key: getattr(metric, key) for key in ("wape", "mae", "rmse", "mbe", "mape", "rows", "actualTotal", "predictedTotal", "absoluteTotalError", "totalErrorPercentage")} if metric else {}
             records.append(ProductMetricRecord(productId=pid, historicalAvg=avg, method=method, **values))
         return summary, records
 

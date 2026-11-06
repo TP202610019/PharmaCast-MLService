@@ -85,10 +85,18 @@ class MetricsCalculationStage:
         for method, values in [("XGBoost", predicted.to_numpy(dtype=float)),
                                ("NaiveWeekly", np.asarray(weekly, dtype=float))]:
             y = actual.to_numpy(dtype=float)
-            result.metrics.append(self._build_metric("Overall", "ALL", y, values, method))
+            overall = self._build_metric("Overall", "ALL", y, values, method)
+            # Sum absolute errors of product totals; different medicines cannot cancel out.
+            product_errors = []
             for pid in products:
                 mask = grid.get_level_values("product_id") == pid
-                result.metrics.append(self._build_metric("Product", pid, y[mask], values[mask], method))
+                metric = self._build_metric("Product", pid, y[mask], values[mask], method)
+                product_errors.append(metric.absoluteTotalError)
+                result.metrics.append(metric)
+            overall.absoluteTotalError = float(sum(product_errors))
+            overall.totalErrorPercentage = (overall.absoluteTotalError / overall.actualTotal * 100
+                                            if overall.actualTotal > 1e-9 else None)
+            result.metrics.append(overall)
 
         result.training_start = train_features.dataframe["date"].min().date()
         result.training_end = cutoff.date()
@@ -109,4 +117,8 @@ class MetricsCalculationStage:
                  if nonzero.any() else None,
             wape=float(np.abs(error).sum() / denominator * 100) if denominator > 1e-9 else None,
             rows=len(actual),
+            actualTotal=float(actual.sum()),
+            predictedTotal=float(predicted.sum()),
+            absoluteTotalError=float(abs(error.sum())),
+            totalErrorPercentage=float(abs(error.sum()) / denominator * 100) if denominator > 1e-9 else None,
         )

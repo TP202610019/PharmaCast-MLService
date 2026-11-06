@@ -62,6 +62,10 @@ class PredictionExecutionRequest(BaseModel):
 class ExecutionMetricsSummary(BaseModel):
     """Aggregated evaluation metrics computed on the holdout test split."""
 
+    actualTotal: float | None = None
+    predictedTotal: float | None = None
+    absoluteTotalError: float | None = None
+    totalErrorPercentage: float | None = None
     wape: float | None = Field(default=None, description="Weighted Absolute Percentage Error (%).")
     mae: float | None = Field(default=None, description="Mean Absolute Error.")
     rmse: float | None = Field(default=None, description="Root Mean Squared Error.")
@@ -76,6 +80,10 @@ class ProductMetricRecord(BaseModel):
     """Per-product evaluation metrics."""
 
     productId: str
+    actualTotal: float | None = None
+    predictedTotal: float | None = None
+    absoluteTotalError: float | None = None
+    totalErrorPercentage: float | None = None
     wape: float | None = None
     mae: float | None = None
     rmse: float | None = None
