@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from datetime import date
+from typing import Any, Literal
 
 try:
     from pydantic import BaseModel, Field
@@ -54,7 +55,7 @@ class PredictionExecutionRequest(BaseModel):
     datasetId: str = Field(description="Identifier of the uploaded dataset file.")
     userId: str = Field(default="", description="Stable user identifier used to key historical data accumulation across all uploads from the same pharmacy.")
     datasetPath: str = Field(description="Absolute or relative path to the dataset file (CSV or XLS/XLSX) inside local storage.")
-    forecastPeriod: int = Field(default=7, ge=1, le=90, description="Number of future periods to forecast.")
+    forecastPeriod: Literal[30, 60, 90] = Field(default=30, description="Number of future days to forecast: 30, 60 or 90.")
     fieldMappings: FieldMappings = Field(default_factory=FieldMappings, description="Dynamic field-key to column-name mappings.")
 
 
@@ -62,9 +63,13 @@ class ExecutionMetricsSummary(BaseModel):
     """Aggregated evaluation metrics computed on the holdout test split."""
 
     wape: float | None = Field(default=None, description="Weighted Absolute Percentage Error (%).")
-    rmse: float | None = Field(default=None, description="Root Mean Squared Error.")
     mae: float | None = Field(default=None, description="Mean Absolute Error.")
+    rmse: float | None = Field(default=None, description="Root Mean Squared Error.")
+    mbe: float | None = Field(default=None, description="Mean(prediction - actual); positive means overforecast.")
     mape: float | None = Field(default=None, description="Mean Absolute Percentage Error (%).")
+    rows: int = 0
+    scope: Literal["Overall"] = "Overall"
+    method: Literal["XGBoost", "NaiveWeekly"] = "XGBoost"
 
 
 class ProductMetricRecord(BaseModel):
@@ -72,11 +77,14 @@ class ProductMetricRecord(BaseModel):
 
     productId: str
     wape: float | None = None
-    rmse: float | None = None
     mae: float | None = None
+    rmse: float | None = None
+    mbe: float | None = None
     mape: float | None = None
     rows: int = 0
     historicalAvg: float | None = None
+    scope: Literal["Product"] = "Product"
+    method: Literal["XGBoost", "NaiveWeekly"] = "XGBoost"
 
 
 class ForecastEntry(BaseModel):
@@ -110,10 +118,22 @@ class PredictionExecutionResponse(BaseModel):
     completedAt: str | None = None
     metrics: ExecutionMetricsSummary = Field(default_factory=ExecutionMetricsSummary)
     productMetrics: list[ProductMetricRecord] = Field(default_factory=list)
+    baselineMetrics: ExecutionMetricsSummary = Field(
+        default_factory=lambda: ExecutionMetricsSummary(method="NaiveWeekly")
+    )
+    baselineProductMetrics: list[ProductMetricRecord] = Field(default_factory=list)
+    trainingPeriodStart: date | None = None
+    trainingPeriodEnd: date | None = None
+    evaluationPeriodStart: date | None = None
+    evaluationPeriodEnd: date | None = None
+    newProductsCount: int | None = None
+    newProductsUnits: float | None = None
+    warnings: list[str] = Field(default_factory=list)
     forecast: list[ForecastEntry] = Field(default_factory=list)
     historicalPoints: list[HistoricalDailyEntry] = Field(default_factory=list)
     artifactPaths: dict[str, str] = Field(default_factory=dict)
     errorMessage: str | None = None
+    isDemo: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump()

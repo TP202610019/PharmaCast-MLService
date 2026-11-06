@@ -13,11 +13,16 @@ except ModuleNotFoundError:
 @dataclass(frozen=True)
 class Settings:
     base_dir: Path
-    database_url: str
-    azure_storage_connection_string: str
+    azure_storage_connection_string: str | None
+    use_local_storage: bool
+    local_storage_root: Path
+    database_url: str | None = None  # Legacy config only; ML never connects to the business DB.
+    presentation_mode: bool = False
     historical_datasets_container: str = "historical-datasets"
+    model_artifacts_container: str = "model-artifacts"
     # Pipeline configuration
     frequency: str = "D"
+    xgboost_n_jobs: int = 4
     lags: list[int] = field(default_factory=lambda: [1, 7, 14])
     rolling_windows: list[int] = field(default_factory=lambda: [7, 14])
     required_columns: list[str] = field(default_factory=lambda: ["date", "product_id", "quantity"])
@@ -49,16 +54,22 @@ class Settings:
 def get_settings() -> Settings:
     base_dir = Path(__file__).resolve().parents[2]
 
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("DATABASE_URL is not configured.")
-
+    use_local_storage = os.getenv("LOCAL_STORAGE_ENABLED", "true").lower() in {"1", "true", "yes"}
     azure_storage_connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-    if not azure_storage_connection_string:
+    if not use_local_storage and not azure_storage_connection_string:
         raise RuntimeError("AZURE_STORAGE_CONNECTION_STRING is not configured.")
+
+    local_storage_root = Path(
+        os.getenv("LOCAL_STORAGE_ROOT", str(base_dir / "storage"))
+    ).resolve()
 
     return Settings(
         base_dir=base_dir,
-        database_url=database_url,
         azure_storage_connection_string=azure_storage_connection_string,
+        use_local_storage=use_local_storage,
+        local_storage_root=local_storage_root,
+        presentation_mode=os.getenv("PRESENTATION_MODE", "false").lower() in {"1", "true", "yes"},
+        historical_datasets_container=os.getenv("HISTORICAL_DATASETS_CONTAINER", "historical-datasets"),
+        model_artifacts_container=os.getenv("MODEL_ARTIFACTS_CONTAINER", "model-artifacts"),
+        xgboost_n_jobs=max(1, int(os.getenv("XGBOOST_N_JOBS", "4"))),
     )

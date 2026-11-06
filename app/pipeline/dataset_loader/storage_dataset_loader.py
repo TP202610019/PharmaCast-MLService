@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import logging
+import io
+import csv
 from pathlib import Path
 from urllib.parse import urlparse
+from urllib.request import urlopen
 
 import pandas as pd
 
@@ -37,13 +40,17 @@ class StorageDatasetLoader:
         logger.info("[LOADER] Reading from URL: %s (ext=%s)", path_part, suffix)
 
         try:
-            if suffix == ".csv" or suffix not in (".xls", ".xlsx"):
-                frame = pd.read_csv(url, dtype=str, encoding="utf-8-sig", low_memory=False)
+            if suffix not in _SUPPORTED_EXTENSIONS:
+                raise ValueError("Unsupported dataset extension")
+            with urlopen(url, timeout=60) as response:
+                contents = response.read()
+            if suffix == ".csv":
+                frame = self._read_csv_bytes(contents)
             else:
-                frame = pd.read_excel(url, dtype=str)
+                frame = pd.read_excel(io.BytesIO(contents), dtype=str)
         except Exception as exc:
             raise FileNotFoundError(
-                f"Could not load dataset from URL: '{url}' — {exc}"
+                f"Could not load dataset '{file_name}' from storage ({type(exc).__name__})."
             ) from exc
 
         frame.columns = [str(col).strip() for col in frame.columns]
@@ -113,13 +120,23 @@ class StorageDatasetLoader:
     def _read_file(path: Path) -> pd.DataFrame:
         suffix = path.suffix.lower()
         if suffix == ".csv":
-            delimiter = StorageDatasetLoader._detect_csv_delimiter(path)
-            logger.info("Reading CSV '%s' with delimiter=%r", path.name, delimiter)
-            return pd.read_csv(path, sep=delimiter, encoding="utf-8-sig", dtype=str)
+            return StorageDatasetLoader._read_csv_bytes(path.read_bytes())
         if suffix in (".xls", ".xlsx"):
             logger.info("Reading Excel file '%s'", path.name)
             return pd.read_excel(path, dtype=str)
         raise ValueError(f"Unsupported file format '{suffix}' for: '{path}'.")
+
+    @staticmethod
+    def _read_csv_bytes(contents: bytes) -> pd.DataFrame:
+        try:
+            decoded = contents.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            decoded = contents.decode("cp1252")
+        try:
+            delimiter = csv.Sniffer().sniff(decoded[:65536], delimiters=",;\t").delimiter
+        except csv.Error:
+            delimiter = ","
+        return pd.read_csv(io.StringIO(decoded), sep=delimiter, dtype=str)
 
     @staticmethod
     def _detect_csv_delimiter(path: Path) -> str:

@@ -42,6 +42,7 @@ class ProcessedDataset:
     name: str
     dataframe: pd.DataFrame
     schema_version: str
+    cleaning_report: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -72,19 +73,23 @@ class ForecastResult:
 class PredictionMetric:
     scope: str
     product_id: str
+    wape: float | None
     mae: float
     rmse: float
-    mape: float
-    wape: float
+    mbe: float
+    mape: float | None
     rows: int
+    method: str = "XGBoost"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "scope": self.scope,
             "product_id": self.product_id,
+            "wape": self.wape,
             "mae": self.mae,
             "rmse": self.rmse,
+            "mbe": self.mbe,
             "mape": self.mape,
-            "wape": self.wape,
             "rows": self.rows,
+            "method": self.method,
         }

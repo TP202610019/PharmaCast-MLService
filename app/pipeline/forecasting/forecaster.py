@@ -35,16 +35,10 @@ class ForecastingStage:
         for product_id, group in dataframe.groupby("product_id"):
             ordered = group.sort_values("date").reset_index(drop=True)
             history_vals = ordered["quantity"].astype(float).tolist()
-            # Use full mean (including zero days) so intermittent products
-            # get a cap proportional to their true average demand, not just
-            # their "active day" average which would be several times higher.
-            full_avg = float(sum(history_vals) / len(history_vals)) if history_vals else 1.0
             states[str(product_id)] = {
                 "history": deque(history_vals, maxlen=history_window),
                 "last_date": ordered["date"].max(),
                 "latest_context": ordered.iloc[-1].to_dict(),
-                "hist_avg": full_avg,
-                "pred_cap": max(full_avg * 3, 1.0),
             }
 
         product_ids = list(states.keys())
@@ -55,7 +49,7 @@ class ForecastingStage:
         # The math is identical to the sequential loop; only the call count changes.
         for step in range(1, horizon + 1):
             step_offset = self._step_offset()
-            batch_rows: list[pd.DataFrame] = []
+            batch_rows: list[dict] = []
             next_dates: list = []
 
             for pid in product_ids:
@@ -63,7 +57,7 @@ class ForecastingStage:
                 next_date = state["last_date"] + step_offset
                 next_dates.append(next_date)
                 batch_rows.append(
-                    self._build_feature_row(
+                    self._build_feature_values(
                         product_id=pid,
                         next_date=next_date,
                         history=list(state["history"]),
@@ -73,19 +67,13 @@ class ForecastingStage:
                 )
 
             # Single predict across all products for this step
-            batch_df = pd.concat(batch_rows, ignore_index=True)
+            batch_df = pd.DataFrame.from_records(batch_rows)
             aligned = self._align(batch_df, trained_model.feature_columns)
             predictions = trained_model.model_pipeline.predict(aligned).clip(min=0)
 
             # Distribute results back to each product's state
             for i, pid in enumerate(product_ids):
-                xgb_pred = float(predictions[i])
-                hist_avg = states[pid]["hist_avg"]
-                # Blend: 30% XGBoost trend signal + 70% historical mean.
-                # Pure XGBoost compounds autoregressive errors over 30 steps;
-                # pure hist_avg ignores real trends. This balance keeps the
-                # total close to observed demand while capturing growth/decline.
-                pred = min(0.3 * xgb_pred + 0.7 * hist_avg, states[pid]["pred_cap"])
+                pred = float(predictions[i])
                 state = states[pid]
                 rows.append(
                     {
@@ -107,13 +95,19 @@ class ForecastingStage:
         )
 
     def _build_feature_row(
+        self, product_id, next_date, history, latest_context, optional_columns,
+    ) -> pd.DataFrame:
+        return pd.DataFrame([self._build_feature_values(
+            product_id, next_date, history, latest_context, optional_columns)])
+
+    def _build_feature_values(
         self,
         product_id: str,
         next_date: pd.Timestamp,
         history: list[float],
         latest_context: dict[str, object],
         optional_columns: list[str],
-    ) -> pd.DataFrame:
+    ) -> dict[str, object]:
         row: dict[str, object] = {
             "product_id":        product_id,
             "year":              next_date.year,
@@ -123,10 +117,6 @@ class ForecastingStage:
             "day_of_month":      next_date.day,
             "is_weekend":        int(next_date.dayofweek >= 5),
             "is_end_of_month":   int(next_date.day >= 25),
-            # demand_tier and revenue_importance are stable per product —
-            # carry them from the last known context row.
-            "demand_tier":       str(latest_context.get("demand_tier", "baja")),
-            "revenue_importance": latest_context.get("revenue_importance", np.nan),
         }
 
         for lag in self.settings.lags:
@@ -138,15 +128,10 @@ class ForecastingStage:
                 float(sum(window_values) / len(window_values)) if window_values else np.nan
             )
 
-        if len(history) >= 2 and history[-2] != 0:
-            row["growth"] = float((history[-1] - history[-2]) / history[-2])
-        else:
-            row["growth"] = np.nan
-
         for column in optional_columns:
             row[column] = latest_context.get(column, np.nan)
 
-        return pd.DataFrame([row])
+        return row
 
     @staticmethod
     def _align(dataframe: pd.DataFrame, feature_columns: list[str]) -> pd.DataFrame:

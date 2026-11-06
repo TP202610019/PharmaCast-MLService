@@ -1,168 +1,112 @@
 from __future__ import annotations
 
-import math
+from dataclasses import dataclass, field
+from datetime import date
 
 import numpy as np
 import pandas as pd
 
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-
 from app.config.settings import Settings
-from app.domain.models.artifacts import FeatureDataset, PredictionMetric, TrainedModel
+from app.domain.models.artifacts import PredictionMetric, ProcessedDataset
+from app.pipeline.feature_engineering.builder import FeatureEngineeringStage
+from app.pipeline.forecasting.forecaster import ForecastingStage
 from app.pipeline.training.xgboost_trainer import XGBoostTrainingStage
 
 
+@dataclass
+class EvaluationResult:
+    metrics: list[PredictionMetric] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    training_start: date | None = None
+    training_end: date | None = None
+    evaluation_start: date | None = None
+    evaluation_end: date | None = None
+    new_products_count: int | None = None
+    new_products_units: float | None = None
+
+
 class MetricsCalculationStage:
-    """Calculates holdout metrics using a temporal split."""
+    """Evaluate both methods on the same complete product/date grid."""
 
     def __init__(self, settings: Settings, training_stage: XGBoostTrainingStage) -> None:
         self.settings = settings
         self.training_stage = training_stage
 
-    def run(
-        self,
-        trained_model: TrainedModel,
-        feature_dataset: FeatureDataset,
-        test_fraction: float,
-        min_active_days: int = 5,
-    ) -> list[PredictionMetric]:
-        """
-        Compute holdout evaluation metrics.
+    def run(self, processed_dataset: ProcessedDataset, horizon: int) -> EvaluationResult:
+        features = FeatureEngineeringStage(self.settings)
+        # Split BEFORE engineering features or fitting anything.
+        daily = features._resample(processed_dataset.dataframe.copy())
+        end = daily["date"].max()
+        start = end - pd.Timedelta(days=horizon - 1)
+        cutoff = start - pd.Timedelta(days=1)
+        train = daily[daily["date"] < start].copy()
+        result = EvaluationResult()
+        known = set(train["product_id"])
+        missing = set(daily["product_id"]) - known
+        # Never silently shorten a requested 30/60/90-day holdout.
+        minimum_days = max(self.settings.lags, default=0) + 1
+        available_days = (cutoff - daily["date"].min()).days + 1
+        if train.empty or available_days < minimum_days:
+            result.warnings.append(
+                f"Insufficient history: evaluation requires {horizon} holdout days and "
+                f"at least {minimum_days} prior training days; all evaluation metrics/dates are null."
+            )
+            return result
 
-        ``min_active_days``: a product must have at least this many days with
-        quantity > 0 in the FULL dataset to be included in the metric calculation.
-        Products below the threshold still get forecasts but are excluded from
-        WAPE/MAPE to prevent sparse, erratic demand from distorting the score.
-        This represents the model's accuracy on *forecastable* products — those
-        with enough historical signal for the model to learn from.
-        """
-        del trained_model
-        dataframe = feature_dataset.dataframe.copy().dropna(subset=[feature_dataset.target_column])
-
-        # Identify products with sufficient activity
-        active_products = (
-            dataframe[dataframe[feature_dataset.target_column] > 0]
-            .groupby("product_id")[feature_dataset.target_column]
-            .count()
+        result.new_products_count = len(missing)
+        result.new_products_units = float(daily.loc[(daily["date"] >= start) & daily["product_id"].isin(missing), "quantity"].sum())
+        products = sorted(known)
+        # Ensure every forecast starts at the same cutoff.
+        last_dates = train.groupby("product_id")["date"].max().to_dict()
+        tails = pd.DataFrame([{"product_id": pid, "date": cutoff, "quantity": 0.0}
+                              for pid in products if last_dates[pid] < cutoff])
+        if not tails.empty:
+            train = pd.concat([train, tails], ignore_index=True)
+        train_features = features.run(ProcessedDataset("evaluation_train", train, "v1"))
+        model = self.training_stage.run(train_features)
+        forecast = ForecastingStage(self.settings).run(model, train_features, horizon).dataframe
+        grid = pd.MultiIndex.from_product(
+            [products, pd.date_range(start, end, freq="D")], names=["product_id", "date"]
         )
-        active_products = set(active_products[active_products >= min_active_days].index.astype(str))
+        actual = daily.set_index(["product_id", "date"])["quantity"].reindex(grid, fill_value=0)
+        predicted = forecast.set_index(["product_id", "date"])["prediction"].reindex(grid)
+        if predicted.isna().any():
+            raise ValueError("Recursive evaluation did not cover the complete holdout grid.")
 
-        train_frame, test_frame = self._temporal_split(dataframe, test_fraction)
+        weekly = []
+        histories = {pid: group["quantity"].astype(float).tolist()
+                     for pid, group in train_features.dataframe.groupby("product_id")}
+        for pid in products:
+            history = histories[pid]
+            for _ in range(horizon):
+                prediction = history[-7] if len(history) >= 7 else 0.0
+                weekly.append(prediction)
+                history.append(prediction)
+        for method, values in [("XGBoost", predicted.to_numpy(dtype=float)),
+                               ("NaiveWeekly", np.asarray(weekly, dtype=float))]:
+            y = actual.to_numpy(dtype=float)
+            result.metrics.append(self._build_metric("Overall", "ALL", y, values, method))
+            for pid in products:
+                mask = grid.get_level_values("product_id") == pid
+                result.metrics.append(self._build_metric("Product", pid, y[mask], values[mask], method))
 
-        # Filter test_frame to active products only for metric evaluation
-        if active_products:
-            test_frame = test_frame[test_frame["product_id"].astype(str).isin(active_products)].copy()
-
-        if test_frame.empty:
-            raise ValueError("Temporal test split is empty. Increase data size or lower test_fraction.")
-        if train_frame.empty:
-            raise ValueError("Temporal train split is empty. Increase data size or lower test_fraction.")
-
-        evaluation_model = self.training_stage.train_on_frame(train_frame, feature_dataset)
-        feature_frame = self._align(test_frame, evaluation_model.feature_columns)
-        actual    = test_frame[feature_dataset.target_column].to_numpy(dtype=float)
-        predicted = evaluation_model.model_pipeline.predict(feature_frame).clip(min=0)
-
-        # Overall metric: aggregate by (date, demand_tier) for crítica+alta tiers.
-        # Summing per-tier per-day cancels individual prediction errors and shows
-        # the accuracy that matters for purchase planning (hierarchical forecasting).
-        # This is how industry measures demand forecast accuracy at the planning level.
-        agg_overall = self._tier_aggregated_metric(test_frame, actual, predicted, feature_dataset.target_column)
-
-        metrics = [agg_overall]
-        for product_id in test_frame["product_id"].dropna().astype(str).unique():
-            mask = (test_frame["product_id"].astype(str) == product_id).to_numpy()
-            metrics.append(self._build_metric("product", product_id, actual[mask], predicted[mask]))
-        return metrics
-
-    def _tier_aggregated_metric(
-        self,
-        test_frame: pd.DataFrame,
-        actual: np.ndarray,
-        predicted: np.ndarray,
-        target_column: str,
-    ) -> PredictionMetric:
-        """
-        Compute WAPE at the demand-tier aggregate level for crítica+alta tiers.
-
-        Individual product predictions are summed per day per tier before
-        computing error metrics. This reflects the accuracy a pharmacy actually
-        needs: "how much total stock of high-demand medications do I need to order?"
-
-        Falls back to flat overall metric if demand_tier column is not present.
-        """
-        import pandas as _pd
-
-        df = test_frame.copy()
-        df["_pred"] = predicted
-
-        if "demand_tier" in df.columns:
-            priority_tiers = {"critica", "alta"}
-            df_priority = df[df["demand_tier"].isin(priority_tiers)]
-
-            if not df_priority.empty and "date" in df_priority.columns:
-                agg = (
-                    df_priority.groupby("date")
-                    .agg(
-                        _actual=(_pd.NamedAgg(column=target_column, aggfunc="sum")),
-                        _pred=(_pd.NamedAgg(column="_pred", aggfunc="sum")),
-                    )
-                )
-                y    = agg["_actual"].to_numpy(dtype=float)
-                yhat = agg["_pred"].to_numpy(dtype=float)
-                rows = int(len(df_priority))
-                return self._build_metric("overall", "ALL", y, yhat, rows=rows)
-
-        # Fallback: flat metric over all products
-        y    = test_frame[target_column].to_numpy(dtype=float)
-        yhat = predicted
-        return self._build_metric("overall", "ALL", y, yhat)
+        result.training_start = train_features.dataframe["date"].min().date()
+        result.training_end = cutoff.date()
+        result.evaluation_start = start.date()
+        result.evaluation_end = end.date()
+        return result
 
     @staticmethod
-    def _align(dataframe: pd.DataFrame, feature_columns: list[str]) -> pd.DataFrame:
-        aligned = dataframe.copy()
-        for column in feature_columns:
-            if column not in aligned.columns:
-                aligned[column] = np.nan
-        return aligned[feature_columns]
-
-    @staticmethod
-    def _temporal_split(dataframe: pd.DataFrame, test_fraction: float) -> tuple[pd.DataFrame, pd.DataFrame]:
-        ordered_dates = sorted(dataframe["date"].dropna().unique())
-        test_size = max(1, math.ceil(len(ordered_dates) * test_fraction))
-        test_dates = set(ordered_dates[-test_size:])
-        train_frame = dataframe[~dataframe["date"].isin(test_dates)].copy()
-        test_frame = dataframe[dataframe["date"].isin(test_dates)].copy()
-        return train_frame, test_frame
-
-    def _build_metric(
-        self,
-        scope: str,
-        product_id: str,
-        actual: np.ndarray,
-        predicted: np.ndarray,
-        rows: int | None = None,
-    ) -> PredictionMetric:
+    def _build_metric(scope, product_id, actual, predicted, method="XGBoost") -> PredictionMetric:
+        error = predicted - actual
+        nonzero = np.abs(actual) > 1e-9
+        denominator = float(np.abs(actual).sum())
         return PredictionMetric(
-            scope=scope,
-            product_id=product_id,
-            mae=float(mean_absolute_error(actual, predicted)),
-            rmse=float(np.sqrt(mean_squared_error(actual, predicted))),
-            mape=self._mape(actual, predicted),
-            wape=self._wape(actual, predicted),
-            rows=rows if rows is not None else int(len(actual)),
+            scope=scope, product_id=product_id, method=method,
+            mae=float(np.abs(error).mean()), rmse=float(np.sqrt(np.square(error).mean())),
+            mbe=float(error.mean()),
+            mape=float((np.abs(error[nonzero] / actual[nonzero])).mean() * 100)
+                 if nonzero.any() else None,
+            wape=float(np.abs(error).sum() / denominator * 100) if denominator > 1e-9 else None,
+            rows=len(actual),
         )
-
-    @staticmethod
-    def _mape(actual: np.ndarray, predicted: np.ndarray) -> float:
-        mask = np.abs(actual) > 1e-9
-        if not mask.any():
-            return float("nan")
-        return float(np.mean(np.abs((actual[mask] - predicted[mask]) / actual[mask])) * 100)
-
-    @staticmethod
-    def _wape(actual: np.ndarray, predicted: np.ndarray) -> float:
-        total = np.sum(np.abs(actual))
-        if total < 1e-9:
-            return float("nan")
-        return float(np.sum(np.abs(actual - predicted)) / total * 100)

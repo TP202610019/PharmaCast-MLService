@@ -98,9 +98,11 @@ class XGBoostTrainingStage:
                 )
             )
         if numeric_columns:
-            transformers.append(("numeric", "passthrough", numeric_columns))
+            transformers.append((
+                "numeric", FunctionTransformer(self._clean_numeric, validate=False), numeric_columns
+            ))
 
-        preprocessor = ColumnTransformer(transformers=transformers, remainder="drop")
+        preprocessor = ColumnTransformer(transformers=transformers, remainder="drop", sparse_threshold=1.0)
         model = XGBRegressor(
             n_estimators=300,
             max_depth=3,
@@ -112,9 +114,15 @@ class XGBoostTrainingStage:
             reg_lambda=2.0,        # L2 regularization — reduces overfitting
             objective="reg:squarederror",
             random_state=42,
-            n_jobs=-1,
+            n_jobs=self.settings.xgboost_n_jobs,
         )
         return Pipeline([("preprocess", preprocessor), ("model", model)])
+
+    @staticmethod
+    def _clean_numeric(values):
+        # Apply the same missing-value treatment during fit and recursive predict.
+        array = np.asarray(values, dtype=np.float64)
+        return np.where(np.isfinite(array), array, 0.0)
 
     @staticmethod
     def _clean_categories(values) -> pd.DataFrame:
@@ -124,6 +132,6 @@ class XGBoostTrainingStage:
     @staticmethod
     def _make_ohe() -> OneHotEncoder:
         try:
-            return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+            return OneHotEncoder(handle_unknown="ignore", sparse_output=True, dtype=np.float32)
         except TypeError:
-            return OneHotEncoder(handle_unknown="ignore", sparse=False)
+            return OneHotEncoder(handle_unknown="ignore", sparse=True, dtype=np.float32)

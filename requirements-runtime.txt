@@ -1,0 +1,13 @@
+# Minimal real-pipeline runtime. No business DB drivers or plotting packages.
+pandas==3.0.2
+numpy==2.4.4
+xgboost==3.2.0
+scikit-learn==1.8.0
+joblib==1.5.3
+fastapi==0.136.1
+uvicorn==0.47.0
+pydantic==2.13.4
+openpyxl==3.1.5
+xlrd==2.0.2
+python-dotenv==1.2.2
+azure-storage-blob==12.24.0

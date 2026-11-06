@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import numpy as np
 
 import pandas as pd
 
@@ -15,9 +16,11 @@ FIELD_KEY_TO_CANONICAL: dict[str, str] = {
     # sales domain — required
     "date":      "date",
     "product":   "product_id",
+    "product_id": "product_id",
     "quantity":  "quantity",
     # sales domain — optional enrichment
     "price":     "price",
+    "unit_price": "price",
     "category":  "category",
     "discount":  "promotion",   # DB field_key → ML canonical name
     "promotion": "promotion",   # direct alias
@@ -82,7 +85,7 @@ class DynamicTransformationStage:
                 continue
 
             logger.info(
-                "[TRANSFORM] Mapped field_key='%s' source='%s' → canonical='%s' (found as '%s')",
+                "[TRANSFORM] Mapped field_key='%s' source='%s' -> canonical='%s' (found as '%s')",
                 field_key, source_col, canonical, actual,
             )
             if actual != canonical:
@@ -99,14 +102,33 @@ class DynamicTransformationStage:
 
         dataframe = dataframe.rename(columns=rename_map)
 
-        dataframe["date"] = pd.to_datetime(dataframe["date"], errors="coerce")
+        # ISO timestamps and Spanish day/month/year may coexist in one export.
+        raw_dates = dataframe["date"].astype("string").str.strip()
+        iso_dates = raw_dates.str.match(r"^\d{4}-\d{2}-\d{2}", na=False)
+        parsed = pd.Series(pd.NaT, index=dataframe.index, dtype="datetime64[ns]")
+        parsed.loc[iso_dates] = pd.to_datetime(raw_dates.loc[iso_dates], format="ISO8601", errors="coerce")
+        parsed.loc[~iso_dates] = pd.to_datetime(raw_dates.loc[~iso_dates], format="mixed", dayfirst=True, errors="coerce")
+        dataframe["date"] = parsed.dt.normalize()
         dataframe["quantity"] = pd.to_numeric(dataframe["quantity"], errors="coerce")
-        dataframe["product_id"] = dataframe["product_id"].astype(str).str.strip().str.upper()
+        dataframe["product_id"] = dataframe["product_id"].astype("string").str.strip().str.upper()
 
         before_filter = len(dataframe)
-        dataframe = dataframe.dropna(subset=["date", "product_id", "quantity"])
-        dataframe = dataframe[dataframe["product_id"] != ""]
-        dataframe = dataframe[dataframe["quantity"] >= 0]
+        reasons = {
+            "invalidDate": dataframe["date"].isna(),
+            "invalidProduct": dataframe["product_id"].isna() | dataframe["product_id"].eq("").fillna(False),
+            "invalidQuantity": ~np.isfinite(dataframe["quantity"]),
+            "negativeQuantity": dataframe["quantity"].lt(0),
+        }
+        rejected = pd.Series(False, index=dataframe.index)
+        report = {"inputRows": before_filter}
+        for reason, mask in reasons.items():
+            report[reason] = int((mask & ~rejected).sum())
+            rejected |= mask
+        report["discardedRows"] = int(rejected.sum())
+        report["acceptedRows"] = before_filter - report["discardedRows"]
+        dataframe = dataframe.loc[~rejected].copy()
+        if dataframe.empty:
+            raise ValueError(f"No valid sales remain after cleaning: {report}")
         logger.info(
             "[TRANSFORM] After filters: %d/%d rows kept (dropped %d)",
             len(dataframe), before_filter, before_filter - len(dataframe),
@@ -129,13 +151,14 @@ class DynamicTransformationStage:
             "[TRANSFORM] Output: %d rows, %d unique products: %s",
             len(dataframe),
             dataframe["product_id"].nunique(),
-            list(dataframe["product_id"].unique()),
+            list(dataframe["product_id"].unique()[:10]),
         )
 
         return ProcessedDataset(
             name="processed_dataset",
             dataframe=dataframe,
             schema_version="v1",
+            cleaning_report=report,
         )
 
     @staticmethod
