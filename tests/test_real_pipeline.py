@@ -70,9 +70,9 @@ class RealPipelineTests(unittest.TestCase):
         self.assertEqual(metric.actualTotal, 10)
         self.assertEqual(metric.predictedTotal, 11)
         self.assertEqual(metric.absoluteTotalError, 1)
-        self.assertEqual(metric.totalErrorPercentage, 10)
+        self.assertAlmostEqual(metric.totalErrorPercentage, 100 / 11)
         zero = MetricsCalculationStage._build_metric("Product", "A", np.zeros(4), predicted)
-        self.assertIsNone(zero.totalErrorPercentage)
+        self.assertEqual(zero.totalErrorPercentage, 100)
         self.assertEqual(zero.absoluteTotalError, 11)
 
     def test_global_volume_error_does_not_cancel_between_products(self):
@@ -86,7 +86,35 @@ class RealPipelineTests(unittest.TestCase):
                 self.assertEqual(overall.actualTotal, 600)
                 self.assertEqual(overall.predictedTotal, 600)
                 self.assertEqual(overall.absoluteTotalError, 120)
-                self.assertEqual(overall.totalErrorPercentage, 20)
+                self.assertAlmostEqual(overall.totalErrorPercentage, 120 / 660 * 100)
+
+    def test_period_volume_zero_cases_and_daily_compensation(self):
+        for actual, predicted, expected_error_percentage in [
+            ([10.], [0.], 100.),
+            ([1.], [0.], 100.),
+            ([0.], [5.], 100.),
+            ([0.], [0.], 0.),
+            ([10.], [8.], 20.),
+            ([10.], [20.], 50.),
+            ([10., 0.], [0., 10.], 0.),
+        ]:
+            with self.subTest(actual=actual, predicted=predicted):
+                metric = MetricsCalculationStage._build_metric(
+                    "Product", "A", np.array(actual), np.array(predicted))
+                self.assertAlmostEqual(metric.totalErrorPercentage, expected_error_percentage)
+
+    def test_global_volume_includes_predictions_for_zero_sales(self):
+        with TemporaryDirectory() as root:
+            frame = dataset(50)
+            frame.loc[(frame.date > "2025-01-20") & (frame.product_id == "B"), "quantity"] = 0
+            result = MetricsCalculationStage(settings(root), FakeTraining()).run(
+                ProcessedDataset("test", frame, "v1"), 30)
+            for method in ("XGBoost", "NaiveWeekly"):
+                overall = next(m for m in result.metrics if m.method == method and m.scope == "Overall")
+                self.assertEqual(overall.actualTotal, 300)
+                self.assertEqual(overall.predictedTotal, 600)
+                self.assertEqual(overall.absoluteTotalError, 300)
+                self.assertEqual(overall.totalErrorPercentage, 50)
 
     def test_prepare_history_groups_sales_and_does_not_train(self):
         from app.api.execution_routes import prepare_history
