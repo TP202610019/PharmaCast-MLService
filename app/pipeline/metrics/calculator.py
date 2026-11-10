@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-import random
 
 import numpy as np
 import pandas as pd
@@ -98,13 +97,7 @@ class MetricsCalculationStage:
                 result.metrics.append(metric)
             overall.absoluteTotalError = float(sum(product_errors))
             base = float(sum(product_bases))
-            overall.totalErrorPercentage = (overall.absoluteTotalError / base * 100
-                                            if base > 0 else 0.0)
-            # Temporary integration test: the dedicated test Front expects a
-            # synthetic overall XGBoost accuracy in this range.
-            if method == "XGBoost":
-                synthetic_accuracy = round(random.uniform(82.0, 90.2), 1)
-                overall.totalErrorPercentage = round(100.0 - synthetic_accuracy, 1)
+            overall.totalErrorPercentage = self._volume_error_percentage(overall.absoluteTotalError, base)
             result.metrics.append(overall)
 
         result.training_start = train_features.dataframe["date"].min().date()
@@ -112,6 +105,12 @@ class MetricsCalculationStage:
         result.evaluation_start = start.date()
         result.evaluation_end = end.date()
         return result
+
+    @staticmethod
+    def _volume_error_percentage(absolute_error: float, volume_base: float) -> float:
+        # Zero/zero contributes neither error nor volume. If all products are
+        # zero/zero, retain the agreed convention of 100% volume accuracy.
+        return float(absolute_error / volume_base * 100) if volume_base > 0 else 0.0
 
     @staticmethod
     def _build_metric(scope, product_id, actual, predicted, method="XGBoost") -> PredictionMetric:
@@ -133,5 +132,5 @@ class MetricsCalculationStage:
             actualTotal=actual_total,
             predictedTotal=predicted_total,
             absoluteTotalError=absolute_total_error,
-            totalErrorPercentage=absolute_total_error / volume_base * 100 if volume_base > 0 else 0.0,
+            totalErrorPercentage=MetricsCalculationStage._volume_error_percentage(absolute_total_error, volume_base),
         )
