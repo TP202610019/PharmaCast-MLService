@@ -100,6 +100,7 @@ class ForecastEntry(BaseModel):
 
     productId: str
     date: str
+    periodEnd: str
     forecastStep: int
     predictedQuantity: float
 
@@ -119,6 +120,7 @@ class PredictionExecutionResponse(BaseModel):
     """
 
     predictionExecutionId: str
+    forecastFrequency: Literal["Weekly"] = "Weekly"
     datasetId: str
     status: str
     isRetrain: bool = Field(description="True if historical data from previous runs was incorporated before retraining.")
