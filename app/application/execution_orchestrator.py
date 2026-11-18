@@ -18,6 +18,7 @@ from app.pipeline.feature_engineering.builder import FeatureEngineeringStage
 from app.pipeline.forecasting.forecaster import ForecastingStage
 from app.pipeline.metrics.calculator import MetricsCalculationStage
 from app.pipeline.training.xgboost_trainer import XGBoostTrainingStage
+from app.pipeline.forecasting.weekly import WeeklyPipeline
 from app.pipeline.transformation.dynamic_transform import DynamicTransformationStage
 from app.shared.utils import utc_now
 
@@ -35,6 +36,7 @@ class ExecutionOrchestrator:
         self.training_stage = XGBoostTrainingStage(settings)
         self.forecasting_stage = ForecastingStage(settings)
         self.metrics_stage = MetricsCalculationStage(settings, self.training_stage)
+        self.weekly_pipeline = WeeklyPipeline(settings)
         self.historical_manager = HistoricalDataManager(
             connection_string=settings.azure_storage_connection_string,
             container_name=settings.historical_datasets_container,
@@ -55,7 +57,8 @@ class ExecutionOrchestrator:
         # incorporate unrelated uploads from the same user.
         combined_df, is_retrain = processed_dataset.dataframe, False
         combined_processed = ProcessedDataset("combined_processed_dataset", combined_df, "v1")
-        evaluation = self.metrics_stage.run(combined_processed, request.forecastPeriod)
+        weekly = self.weekly_pipeline
+        evaluation = weekly.evaluate(combined_processed, request.forecastPeriod)
         optional = sorted(set(combined_df.columns) - {"date", "product_id", "quantity"})
         warnings = list(evaluation.warnings)
         if processed_dataset.cleaning_report.get("discardedRows", 0):
@@ -66,10 +69,7 @@ class ExecutionOrchestrator:
                 "features because future context is not supplied: " + ", ".join(optional)
             )
         feature_dataset = self.feature_engineering.run(combined_processed)
-        trained_model = self.training_stage.run(feature_dataset)
-        forecast_result = self.forecasting_stage.run(
-            trained_model, feature_dataset, request.forecastPeriod,
-        )
+        forecast_result, trained_model = weekly.forecast(combined_df, request.forecastPeriod)
 
         historical_avgs: dict[str, float] = {
             str(pid): round(float(avg), 4)
@@ -105,16 +105,16 @@ class ExecutionOrchestrator:
                 "userId": request.userId,
                 "fieldMappings": dict(request.fieldMappings.fields),
                 "forecastPeriod": request.forecastPeriod,
-                "frequency": self.settings.frequency,
-                "lags": self.settings.lags,
-                "rollingWindows": self.settings.rolling_windows,
+                "frequency": "Weekly",
+                "lags": list(range(1, 9)),
+                "rollingWindows": [2, 4, 8, 13],
                 "trainingPeriodStart": response.trainingPeriodStart,
                 "trainingPeriodEnd": response.trainingPeriodEnd,
                 "evaluationPeriodStart": response.evaluationPeriodStart,
                 "evaluationPeriodEnd": response.evaluationPeriodEnd,
                 "finalTrainingPeriodStart": feature_dataset.dataframe["date"].min().date(),
                 "finalTrainingPeriodEnd": feature_dataset.dataframe["date"].max().date(),
-                "forecastPolicy": "pure_xgboost",
+                "forecastPolicy": "weekly_recursive_tweedie",
                 "predictionPostprocessing": "clip_nonnegative",
                 "warnings": warnings,
                 "cleaningReport": processed_dataset.cleaning_report,
@@ -159,6 +159,7 @@ class ExecutionOrchestrator:
                 ForecastEntry(
                     productId=str(row["product_id"]),
                     date=date_str,
+                    periodEnd=row["period_end"].strftime("%Y-%m-%dT00:00:00+00:00"),
                     forecastStep=int(row["forecast_step"]),
                     predictedQuantity=max(0.0, float(row["prediction"])),
                 )
