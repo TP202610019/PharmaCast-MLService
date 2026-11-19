@@ -100,7 +100,13 @@ class DynamicTransformationStage:
                 f"Check that field_keys 'date', 'product', and 'quantity' are included in the mapping."
             )
 
+        category_source = self._find_column(dataframe, field_map["category"]) if "category" in field_map else None
+        if "category" in dataframe and category_source != "category":
+            dataframe = dataframe.drop(columns="category")
         dataframe = dataframe.rename(columns=rename_map)
+        if "category" in dataframe:
+            category = dataframe["category"].astype("string").str.strip()
+            dataframe["category"] = category.mask(category.eq(""))
 
         # ISO timestamps and Spanish day/month/year may coexist in one export.
         raw_dates = dataframe["date"].astype("string").str.strip()

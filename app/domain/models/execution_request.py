@@ -100,8 +100,11 @@ class ForecastEntry(BaseModel):
 
     productId: str
     date: str
+    periodEnd: str
     forecastStep: int
     predictedQuantity: float
+    lowerBound: float | None = None
+    upperBound: float | None = None
 
 
 class HistoricalDailyEntry(BaseModel):
@@ -119,6 +122,9 @@ class PredictionExecutionResponse(BaseModel):
     """
 
     predictionExecutionId: str
+    forecastFrequency: Literal["Weekly"] = "Weekly"
+    confidenceLevel: float | None = None
+    productCategories: dict[str, str] = Field(default_factory=dict)
     datasetId: str
     status: str
     isRetrain: bool = Field(description="True if historical data from previous runs was incorporated before retraining.")

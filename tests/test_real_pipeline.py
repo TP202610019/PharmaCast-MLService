@@ -299,9 +299,9 @@ class RealPipelineTests(unittest.TestCase):
             with self.subTest(stage=stage):
                 orchestrator = self.orchestrator()
                 if stage == "metrics":
-                    orchestrator.metrics_stage.run = Mock(side_effect=RuntimeError("synthetic failure"))
+                    orchestrator.weekly_pipeline.evaluate = Mock(side_effect=RuntimeError("synthetic failure"))
                 elif stage == "forecast":
-                    orchestrator.forecasting_stage.run = Mock(side_effect=RuntimeError("synthetic failure"))
+                    orchestrator.weekly_pipeline.forecast = Mock(side_effect=RuntimeError("synthetic failure"))
                 else:
                     orchestrator.artifact_store.save.side_effect = RuntimeError("synthetic failure")
                 with self.assertRaises(RuntimeError):
@@ -320,7 +320,9 @@ class RealPipelineTests(unittest.TestCase):
         self.assertEqual(response.baselineMetrics.method, "NaiveWeekly")
         self.assertEqual(response.metrics.scope, "Overall")
         self.assertEqual(response.productMetrics[0].scope, "Product")
-        self.assertEqual(len(response.forecast), 60)
+        self.assertEqual(len(response.forecast), 10)
+        self.assertEqual(response.forecastFrequency, "Weekly")
+        self.assertTrue(all(f.periodEnd for f in response.forecast))
         self.assertEqual(set(response.artifactPaths), {"model", "metadata", "historicalSnapshot"})
         manifest = orchestrator.artifact_store.save.call_args.args[3]
         self.assertEqual(manifest["datasetId"], "dataset")
@@ -339,6 +341,23 @@ class RealPipelineTests(unittest.TestCase):
         history = orchestrator.historical_manager.load_historical("user")
         self.assertIn("price", history)
         self.assertNotIn("price", orchestrator.artifact_store.save.call_args.args[2].feature_columns)
+
+    def test_response_returns_latest_mapped_category_and_weekly_bounds(self):
+        orchestrator = self.orchestrator()
+        raw = dataset(75, tuple(f"P{i}" for i in range(12)))
+        raw["category"] = "Unmapped"
+        raw["Familia"] = "Anterior"
+        raw.loc[raw.date.eq(raw.date.max()), "Familia"] = "Actual"
+        orchestrator.dataset_loader.load.return_value.dataframe = raw
+        request = self.request()
+        request.fieldMappings.fields["category"] = "Familia"
+        response = asyncio.run(orchestrator.execute(request))
+        self.assertEqual(set(response.productCategories.values()), {"Actual"})
+        self.assertEqual(response.confidenceLevel, 0.80)
+        self.assertTrue(all(f.lowerBound <= f.predictedQuantity <= f.upperBound for f in response.forecast))
+        request.fieldMappings.fields.clear()
+        response = asyncio.run(orchestrator.execute(request))
+        self.assertEqual(response.productCategories, {})
 
     def test_real_xgboost_artifact_round_trip_and_blob_parity(self):
         features = self.features(dataset(20))
