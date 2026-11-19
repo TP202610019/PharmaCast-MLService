@@ -15,8 +15,25 @@ class WeeklyTrainer(XGBoostTrainingStage):
 
 
 class WeeklyPipeline:
+    COVERAGE = 0.80
+    MIN_CALIBRATION_PRODUCTS = 10
+
     def __init__(self, settings):
         self.settings = settings
+
+    @staticmethod
+    def product_scales(data):
+        """Average weekly sales since first observation, including zero-sale days."""
+        stats = data.groupby('product_id').quantity.sum() * 7
+        days = (data.date.max() - data.groupby('product_id').date.min()).dt.days + 1
+        return (stats / days).clip(lower=1)
+
+    def add_uncertainty(self, forecast, history, quantiles):
+        rows = forecast.dataframe
+        scales = rows.product_id.map(self.product_scales(history))
+        for column, index in [('lower_bound', 0), ('upper_bound', 1)]:
+            offsets = rows.forecast_step.map({step: limits[index] for step, limits in quantiles.items()})
+            rows[column] = (rows.prediction + scales * offsets).clip(lower=0)
 
     @staticmethod
     def features(pid, date, history):
@@ -96,6 +113,16 @@ class WeeklyPipeline:
                 actual.append(float(grouped_actual.get((pid,offset//7+1),0)))
                 naive.append(float(last.get(pid,0))*days/7)
         y=np.asarray(actual)
+        steps = grid.get_level_values('forecast_step')
+        scales = self.product_scales(train).reindex(grid.get_level_values('product_id')).to_numpy()
+        # Compare equivalent forecast steps (including the final partial week).
+        normalized_errors = (y - predicted) / scales
+        tail = (1 - self.COVERAGE) / 2
+        for step in steps.unique():
+            sample = normalized_errors[steps == step]
+            if len(sample) >= self.MIN_CALIBRATION_PRODUCTS:
+                lower, upper = np.quantile(sample, [tail, 1 - tail])
+                result.weekly_error_quantiles[int(step)] = (min(0., lower), max(0., upper))
         for method, values in [('XGBoost',predicted),('NaiveWeekly',np.asarray(naive))]:
             overall=MetricsCalculationStage._build_metric('Overall','ALL',y,values,method)
             products=[]

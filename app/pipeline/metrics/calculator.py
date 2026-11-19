@@ -23,6 +23,7 @@ class EvaluationResult:
     evaluation_end: date | None = None
     new_products_count: int | None = None
     new_products_units: float | None = None
+    weekly_error_quantiles: dict[int, tuple[float, float]] = field(default_factory=dict)
 
 
 class MetricsCalculationStage:

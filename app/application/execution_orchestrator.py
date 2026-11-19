@@ -70,6 +70,12 @@ class ExecutionOrchestrator:
             )
         feature_dataset = self.feature_engineering.run(combined_processed)
         forecast_result, trained_model = weekly.forecast(combined_df, request.forecastPeriod)
+        weekly.add_uncertainty(forecast_result, combined_df, evaluation.weekly_error_quantiles)
+        categories = {}
+        if "category" in request.fieldMappings.fields and "category" in combined_df:
+            category_rows = combined_df.assign(category=combined_df.category.astype("string").str.strip())
+            category_rows = category_rows.loc[category_rows.category.notna() & category_rows.category.ne("")]
+            categories = category_rows.groupby("product_id").category.last().to_dict()
 
         historical_avgs: dict[str, float] = {
             str(pid): round(float(avg), 4)
@@ -87,6 +93,8 @@ class ExecutionOrchestrator:
         response = PredictionExecutionResponse(
             predictionExecutionId=execution_id, datasetId=request.datasetId,
             status="Completed", isRetrain=is_retrain,
+            confidenceLevel=weekly.COVERAGE if evaluation.weekly_error_quantiles else None,
+            productCategories=categories,
             startedAt=started_at.isoformat(), completedAt=utc_now().isoformat(),
             metrics=metrics_summary, productMetrics=product_metrics,
             baselineMetrics=baseline_summary, baselineProductMetrics=baseline_products,
@@ -162,6 +170,8 @@ class ExecutionOrchestrator:
                     periodEnd=row["period_end"].strftime("%Y-%m-%dT00:00:00+00:00"),
                     forecastStep=int(row["forecast_step"]),
                     predictedQuantity=max(0.0, float(row["prediction"])),
+                    lowerBound=float(row["lower_bound"]) if pd.notna(row.get("lower_bound")) else None,
+                    upperBound=float(row["upper_bound"]) if pd.notna(row.get("upper_bound")) else None,
                 )
             )
         return entries
