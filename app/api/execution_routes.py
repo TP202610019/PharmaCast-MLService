@@ -29,6 +29,11 @@ async def prepare_history(request: PredictionExecutionRequest, settings: Setting
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+def execution_error(error: Exception, message: str) -> str:
+    stage = getattr(error, "analysis_stage", "Ejecución del modelo")
+    return f"Etapa: {stage}. {message}"
+
+
 @router.post("/execute", response_model=PredictionExecutionResponse, status_code=200)
 async def execute_prediction(
     request: PredictionExecutionRequest,
@@ -42,10 +47,10 @@ async def execute_prediction(
     try:
         return await ExecutionOrchestrator(settings=settings).execute(request)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=execution_error(exc, str(exc))) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=execution_error(exc, str(exc))) from exc
     except Exception as exc:
         # Dataset loaders must redact remote credentials before raising errors.
         logger.exception("[ML-ROUTE] Execution failed")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=execution_error(exc, "El servicio no pudo completar esta etapa.")) from exc

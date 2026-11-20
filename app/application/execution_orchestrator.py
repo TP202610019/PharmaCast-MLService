@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 
 import pandas as pd
 
@@ -23,6 +24,15 @@ from app.pipeline.transformation.dynamic_transform import DynamicTransformationS
 from app.shared.utils import utc_now
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def analysis_stage(name: str):
+    try:
+        yield
+    except Exception as error:
+        error.analysis_stage = name
+        raise
 
 
 class ExecutionOrchestrator:
@@ -50,15 +60,18 @@ class ExecutionOrchestrator:
 
         execution_id = request.predictionExecutionId
         started_at = utc_now()
-        raw_dataset = self.dataset_loader.load(request.datasetPath)
-        processed_dataset = self.dynamic_transform.run(raw_dataset, request.fieldMappings.fields)
+        with analysis_stage("Carga de datos"):
+            raw_dataset = self.dataset_loader.load(request.datasetPath)
+        with analysis_stage("Preprocesamiento"):
+            processed_dataset = self.dynamic_transform.run(raw_dataset, request.fieldMappings.fields)
         history_key = request.userId if request.userId else request.datasetId
         # Dataset identity defines an immutable historical input. Do not silently
         # incorporate unrelated uploads from the same user.
         combined_df, is_retrain = processed_dataset.dataframe, False
         combined_processed = ProcessedDataset("combined_processed_dataset", combined_df, "v1")
         weekly = self.weekly_pipeline
-        evaluation = weekly.evaluate(combined_processed, request.forecastPeriod)
+        with analysis_stage("Evaluación del modelo"):
+            evaluation = weekly.evaluate(combined_processed, request.forecastPeriod)
         optional = sorted(set(combined_df.columns) - {"date", "product_id", "quantity"})
         warnings = list(evaluation.warnings)
         if processed_dataset.cleaning_report.get("discardedRows", 0):
@@ -68,9 +81,12 @@ class ExecutionOrchestrator:
                 "Optional mapped fields preserved in sales history but excluded from baseline "
                 "features because future context is not supplied: " + ", ".join(optional)
             )
-        feature_dataset = self.feature_engineering.run(combined_processed)
-        forecast_result, trained_model = weekly.forecast(combined_df, request.forecastPeriod)
-        weekly.add_uncertainty(forecast_result, combined_df, evaluation.weekly_error_quantiles)
+        with analysis_stage("Ingeniería de variables"):
+            feature_dataset = self.feature_engineering.run(combined_processed)
+        with analysis_stage("Entrenamiento y proyección"):
+            forecast_result, trained_model = weekly.forecast(combined_df, request.forecastPeriod)
+        with analysis_stage("Incertidumbre del pronóstico"):
+            weekly.add_uncertainty(forecast_result, combined_df, evaluation.weekly_error_quantiles)
         categories = {}
         if "category" in request.fieldMappings.fields and "category" in combined_df:
             category_rows = combined_df.assign(category=combined_df.category.astype("string").str.strip())

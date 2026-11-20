@@ -319,6 +319,8 @@ class RealPipelineTests(unittest.TestCase):
         model_path = Path(previous.artifactPaths["model"])
         metadata_path = Path(previous.artifactPaths["metadata"])
         model_before, metadata_before = model_path.read_bytes(), metadata_path.read_bytes()
+        first.weekly_pipeline.evaluate = Mock(return_value=first.weekly_pipeline.evaluate(
+            ProcessedDataset("test", dataset(50), "v1"), 30))
         failed_request = self.request().model_copy(update={"predictionExecutionId": "failed"})
         with patch("app.api.execution_routes.ExecutionOrchestrator", return_value=first), \
              patch.object(WeeklyTrainer, "run", side_effect=RuntimeError("controlled training failure")), \
@@ -326,6 +328,7 @@ class RealPipelineTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as raised:
                 asyncio.run(execute_prediction(failed_request, self.settings))
         self.assertEqual(raised.exception.status_code, 500)
+        self.assertIn("Etapa: Entrenamiento y proyección", raised.exception.detail)
         self.assertTrue(any("controlled training failure" in line for line in logs.output))
         self.assertEqual(model_path.read_bytes(), model_before)
         self.assertEqual(metadata_path.read_bytes(), metadata_before)
