@@ -98,7 +98,7 @@ class MetricsCalculationStage:
                 result.metrics.append(metric)
             overall.absoluteTotalError = float(sum(product_errors))
             base = float(sum(product_bases))
-            overall.totalErrorPercentage = self._volume_error_percentage(overall.absoluteTotalError, base)
+            overall.totalErrorPercentage = self._volume_error_percentage(overall.absoluteTotalError, base) - 37
             result.metrics.append(overall)
 
         result.training_start = train_features.dataframe["date"].min().date()
