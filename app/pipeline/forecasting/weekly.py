@@ -1,10 +1,20 @@
 """Weekly XGBoost forecasts, with the same temporal protocol in evaluation and serving."""
+import logging
 import math
 import numpy as np
 import pandas as pd
 from app.domain.models.artifacts import FeatureDataset, ForecastResult
 from app.pipeline.training.xgboost_trainer import XGBoostTrainingStage
 from app.pipeline.metrics.calculator import EvaluationResult, MetricsCalculationStage
+
+
+logger = logging.getLogger(__name__)
+
+
+def performance_warnings(wape: float | None, limit: float) -> list[str]:
+    if wape is None or wape <= limit:
+        return []
+    return [f"LOW_FORECAST_PERFORMANCE: XGBoost WAPE {wape:.2f}% exceeded the configured maximum of {limit:g}%."]
 
 
 class WeeklyTrainer(XGBoostTrainingStage):
@@ -132,6 +142,11 @@ class WeeklyPipeline:
             overall.absoluteTotalError=sum(m.absoluteTotalError for m in products)
             overall.totalErrorPercentage=MetricsCalculationStage._volume_error_percentage(overall.absoluteTotalError,sum(max(m.actualTotal,m.predictedTotal) for m in products))
             result.metrics.extend(products+[overall])
+            if method == "XGBoost":
+                warnings = performance_warnings(overall.wape, self.settings.max_evaluation_wape_percent)
+                result.warnings.extend(warnings)
+                for warning in warnings:
+                    logger.warning("%s", warning)
         result.training_start=train.date.min().date()
         result.training_end=cutoff.date()
         result.evaluation_start=start.date()

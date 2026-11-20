@@ -23,6 +23,7 @@ class Settings:
     # Pipeline configuration
     frequency: str = "D"
     xgboost_n_jobs: int = 4
+    max_evaluation_wape_percent: float = 20.0
     lags: list[int] = field(default_factory=lambda: [1, 7, 14])
     rolling_windows: list[int] = field(default_factory=lambda: [7, 14])
     required_columns: list[str] = field(default_factory=lambda: ["date", "product_id", "quantity"])
@@ -71,5 +72,6 @@ def get_settings() -> Settings:
         presentation_mode=os.getenv("PRESENTATION_MODE", "false").lower() in {"1", "true", "yes"},
         historical_datasets_container=os.getenv("HISTORICAL_DATASETS_CONTAINER", "historical-datasets"),
         model_artifacts_container=os.getenv("MODEL_ARTIFACTS_CONTAINER", "model-artifacts"),
+        max_evaluation_wape_percent=float(os.getenv("MAX_EVALUATION_WAPE_PERCENT", "20")),
         xgboost_n_jobs=max(1, int(os.getenv("XGBOOST_N_JOBS", "4"))),
     )

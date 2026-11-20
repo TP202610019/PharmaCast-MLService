@@ -308,6 +308,47 @@ class RealPipelineTests(unittest.TestCase):
                     asyncio.run(orchestrator.execute(self.request()))
                 self.assertEqual(orchestrator.historical_manager.snapshot_count("user"), 0)
 
+    def test_training_failure_preserves_readable_previous_artifact(self):
+        from app.api.execution_routes import execute_prediction
+        from app.pipeline.forecasting.weekly import WeeklyTrainer
+        from fastapi import HTTPException
+
+        first = self.orchestrator()
+        first.artifact_store = ModelArtifactStore(self.settings)
+        previous = asyncio.run(first.execute(self.request()))
+        model_path = Path(previous.artifactPaths["model"])
+        metadata_path = Path(previous.artifactPaths["metadata"])
+        model_before, metadata_before = model_path.read_bytes(), metadata_path.read_bytes()
+        failed_request = self.request().model_copy(update={"predictionExecutionId": "failed"})
+        with patch("app.api.execution_routes.ExecutionOrchestrator", return_value=first), \
+             patch.object(WeeklyTrainer, "run", side_effect=RuntimeError("controlled training failure")), \
+             self.assertLogs("app.api.execution_routes", level="ERROR") as logs:
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(execute_prediction(failed_request, self.settings))
+        self.assertEqual(raised.exception.status_code, 500)
+        self.assertTrue(any("controlled training failure" in line for line in logs.output))
+        self.assertEqual(model_path.read_bytes(), model_before)
+        self.assertEqual(metadata_path.read_bytes(), metadata_before)
+        self.assertIsNotNone(joblib.load(model_path))
+        self.assertFalse(model_path.parent.with_name("failed").exists())
+
+    def test_known_metrics_are_saved_in_execution_metadata(self):
+        from app.pipeline.metrics.calculator import EvaluationResult
+
+        runner = self.orchestrator()
+        runner.artifact_store = ModelArtifactStore(self.settings)
+        metric = MetricsCalculationStage._build_metric(
+            "Overall", "ALL", np.array([100., 200.]), np.array([110., 180.])
+        )
+        runner.weekly_pipeline.evaluate = Mock(return_value=EvaluationResult(metrics=[metric]))
+        response = asyncio.run(runner.execute(self.request()))
+        metadata = json.loads(Path(response.artifactPaths["metadata"]).read_text(encoding="utf-8"))
+        self.assertEqual(metadata["executionId"], response.predictionExecutionId)
+        [saved] = metadata["evaluationMetrics"]
+        self.assertEqual(saved["mae"], 15)
+        self.assertAlmostEqual(saved["rmse"], 15.8113883)
+        self.assertEqual(saved["mape"], 10)
+
     def test_success_response_contract_and_snapshot_after_artifact(self):
         orchestrator = self.orchestrator()
         def save(*args):

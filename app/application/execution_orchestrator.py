@@ -125,6 +125,7 @@ class ExecutionOrchestrator:
                 "forecastPolicy": "weekly_recursive_tweedie",
                 "predictionPostprocessing": "clip_nonnegative",
                 "warnings": warnings,
+                "evaluationMetrics": [metric.to_dict() for metric in evaluation.metrics],
                 "cleaningReport": processed_dataset.cleaning_report,
             },
         )
